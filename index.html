@@ -2662,7 +2662,7 @@ ${d.excerpt}`;
 async function httpJson(url, opts){
   let r; try { r = await fetch(url, opts); } catch { throw new Error("אין חיבור לשירות ה-AI. בדקו את הרשת ואת הכתובת."); }
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error((j.error && (j.error.message || j.error)) || ("שגיאה " + r.status));
+  if (!r.ok){ const e = new Error((j.error && (j.error.message || j.error)) || ("שגיאה " + r.status)); e.status = r.status; throw e; }
   return j;
 }
 // מודלי Flash רגילים של Gemini (למשל gemini-2.5-flash), מהחדש לישן, ואחריהם גרסאות lite
@@ -2707,15 +2707,21 @@ async function aiCall(prompt){
     const text = j => (j.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
     // מודל שהמכסה החינמית שלו היא 0 לא זמין במסלול החינמי: עוברים למודל Flash הבא ברשימה
     const noFree = e => /free_tier/i.test(e.message) && /limit: 0\b/.test(e.message);
+    // עומס זמני אצל גוגל: מנסים שוב אחרי כמה שניות, ואם לא עוזר עוברים למודל הבא
+    const busy = e => e.status === 503 || e.status === 500 || /high demand|overloaded|unavailable/i.test(e.message);
+    const wait = ms => new Promise(r => setTimeout(r, ms));
     try { return text(await ask(a.model)); }
     catch (e){
-      if (!noFree(e)) throw e;
+      if (busy(e)){ await wait(4000); try { return text(await ask(a.model)); } catch (e1){ if (!busy(e1) && !noFree(e1)) throw e1; } }
+      else if (!noFree(e)) throw e;
       if (!a.models?.length) await loadModels().catch(() => {});
       for (const m of geminiCandidates(a.models || []).filter(m => m !== a.model).slice(0, 5)){
-        try { const j = await ask(m); a.model = m; G.aiMsg = `עברנו למודל ${m}, שזמין במסלול החינמי.`; return text(j); }
-        catch (e2){ if (!noFree(e2)) throw e2; }
+        try { const j = await ask(m); a.model = m; G.aiMsg = `עברנו למודל ${m}.`; return text(j); }
+        catch (e2){ if (!noFree(e2) && !busy(e2)) throw e2; }
       }
-      throw new Error(`המודל ${a.model} לא זמין במסלול החינמי של Gemini, וגם לא נמצא מודל Flash חינמי אחר למפתח הזה. אפשר לבחור מודל אחר בשדה ״מודל״, או להפעיל חיוב בחשבון של גוגל.`);
+      throw new Error(busy(e)
+        ? "השרתים של Gemini עמוסים כרגע, גם במודלים החלופיים. נסו שוב בעוד דקה או שתיים."
+        : `המודל ${a.model} לא זמין במסלול החינמי של Gemini, וגם לא נמצא מודל Flash חינמי אחר למפתח הזה. אפשר לבחור מודל אחר בשדה ״מודל״, או להפעיל חיוב בחשבון של גוגל.`);
     }
   }
   if (a.provider === "anthropic"){
