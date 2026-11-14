@@ -2687,7 +2687,10 @@ async function loadModels(){
   }
   a.models = ids; return ids;
 }
+// חיתוך טקסט באמצע אימוג'י משאיר חצי תו, ושירותי ה-AI דוחים בקשה כזאת. מנקים לפני השליחה.
+const wellFormed = t => t.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
 async function aiCall(prompt){
+  prompt = wellFormed(prompt);
   const a = G.ai;
   if (!a.key) throw new Error("חסר מפתח API לבינה המלאכותית");
   if (!a.model) await loadModels();
