@@ -335,6 +335,13 @@ async function httpJson(url, opts){
   if (!r.ok) throw new Error((j.error && (j.error.message || j.error)) || ("שגיאה " + r.status));
   return j;
 }
+// מודלי Flash רגילים של Gemini (למשל gemini-2.5-flash), מהחדש לישן, ואחריהם גרסאות lite
+function geminiCandidates(ids){
+  const ver = id => parseFloat(id.split("-")[1]);
+  const plain = ids.filter(id => /^gemini-\d+(\.\d+)?-flash$/.test(id)).sort((x, y) => ver(y) - ver(x));
+  const lite = ids.filter(id => /^gemini-\d+(\.\d+)?-flash-lite$/.test(id)).sort((x, y) => ver(y) - ver(x));
+  return plain.concat(lite);
+}
 const aiHeaders = a => a.provider === "anthropic"
   ? { "x-api-key": a.key, "anthropic-version": "2023-06-01", "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true" }
   : a.provider === "compat" ? { authorization: "Bearer " + a.key, "content-type": "application/json" } : { "content-type": "application/json" };
@@ -344,8 +351,7 @@ async function loadModels(){
   if (a.provider === "gemini"){
     const j = await httpJson("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=" + encodeURIComponent(a.key));
     ids = (j.models || []).filter(m => (m.supportedGenerationMethods || []).includes("generateContent")).map(m => m.name.replace(/^models\//, "")).filter(id => /^gemini/.test(id));
-    const good = ids.filter(id => /flash/.test(id) && !/lite|preview|exp|image|tts|live|audio|latest/.test(id)).sort().reverse();
-    if (!ids.includes(a.model)) a.model = good[0] || ids[0] || "";
+    if (!ids.includes(a.model)) a.model = geminiCandidates(ids)[0] || ids[0] || "";
   } else if (a.provider === "anthropic"){
     const j = await httpJson("https://api.anthropic.com/v1/models?limit=100", { headers: aiHeaders(a) });
     ids = (j.data || []).map(m => m.id);
@@ -366,9 +372,21 @@ async function aiCall(prompt){
   if (!a.model) await loadModels();
   if (!a.model) throw new Error("לא נמצא מודל זמין למפתח הזה");
   if (a.provider === "gemini"){
-    const j = await httpJson(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(a.model)}:generateContent?key=${encodeURIComponent(a.key)}`,
+    const ask = model => httpJson(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(a.key)}`,
       { method: "POST", headers: aiHeaders(a), body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", temperature: 1 } }) });
-    return (j.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
+    const text = j => (j.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
+    // מודל שהמכסה החינמית שלו היא 0 לא זמין במסלול החינמי: עוברים למודל Flash הבא ברשימה
+    const noFree = e => /free_tier/i.test(e.message) && /limit: 0\b/.test(e.message);
+    try { return text(await ask(a.model)); }
+    catch (e){
+      if (!noFree(e)) throw e;
+      if (!a.models?.length) await loadModels().catch(() => {});
+      for (const m of geminiCandidates(a.models || []).filter(m => m !== a.model).slice(0, 5)){
+        try { const j = await ask(m); a.model = m; G.aiMsg = `עברנו למודל ${m}, שזמין במסלול החינמי.`; return text(j); }
+        catch (e2){ if (!noFree(e2)) throw e2; }
+      }
+      throw new Error(`המודל ${a.model} לא זמין במסלול החינמי של Gemini, וגם לא נמצא מודל Flash חינמי אחר למפתח הזה. אפשר לבחור מודל אחר בשדה ״מודל״, או להפעיל חיוב בחשבון של גוגל.`);
+    }
   }
   if (a.provider === "anthropic"){
     const j = await httpJson("https://api.anthropic.com/v1/messages", { method: "POST", headers: aiHeaders(a), body: JSON.stringify({ model: a.model, max_tokens: 8000, messages: [{ role: "user", content: prompt }] }) });
