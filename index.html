@@ -2720,9 +2720,19 @@ ${d.statLines}
 קטעים מהשיחה:
 ${d.excerpt}`;
 }
-async function httpJson(url, opts){
-  let r; try { r = await fetch(url, opts); } catch { throw new Error("אין חיבור לשירות ה-AI. בדקו את הרשת ואת הכתובת."); }
-  const j = await r.json().catch(() => ({}));
+let aiAbort = null, aiCancelled = false;      // הבקשה הפעילה ל-AI, כדי שאפשר יהיה לבטל או לקצוב לה זמן
+const AI_TIMEOUT_MS = 120000;
+async function httpJson(url, opts = {}){
+  if (aiCancelled) throw new Error("היצירה בוטלה.");
+  const ctl = aiAbort = new AbortController(); let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, AI_TIMEOUT_MS);
+  let r, j;
+  try { r = await fetch(url, { ...opts, signal: ctl.signal }); j = await r.json().catch(() => ({})); }
+  catch {
+    if (aiCancelled) throw new Error("היצירה בוטלה.");
+    if (timedOut) throw new Error("שירות ה-AI לא ענה תוך שתי דקות. נסו שוב, או בחרו מודל מהיר יותר (למשל גרסת lite) בשדה ״מודל״.");
+    throw new Error("אין חיבור לשירות ה-AI. בדקו את הרשת ואת הכתובת.");
+  } finally { clearTimeout(timer); }
   if (!r.ok){ const e = new Error((j.error && (j.error.message || j.error)) || ("שגיאה " + r.status)); e.status = r.status; throw e; }
   return j;
 }
@@ -2773,7 +2783,7 @@ async function aiCall(prompt){
     const wait = ms => new Promise(r => setTimeout(r, ms));
     try { return text(await ask(a.model)); }
     catch (e){
-      if (busy(e)){ await wait(4000); try { return text(await ask(a.model)); } catch (e1){ if (!busy(e1) && !noFree(e1)) throw e1; } }
+      if (busy(e) && !aiCancelled){ await wait(4000); try { return text(await ask(a.model)); } catch (e1){ if (!busy(e1) && !noFree(e1)) throw e1; } }
       else if (!noFree(e)) throw e;
       if (!a.models?.length) await loadModels().catch(() => {});
       for (const m of geminiCandidates(a.models || []).filter(m => m !== a.model).slice(0, 5)){
@@ -2925,7 +2935,7 @@ function finish(){ G.phase = "final"; hostChanged(); }
 
 async function generate(n, keep){
   if (!CHAT){ G.err = "קודם טוענים את קובץ השיחה."; return render(); }
-  G.busy = "gen"; G.err = null; render();
+  G.busy = "gen"; G.err = null; aiCancelled = false; render();
   try {
     const kept = G.questions.slice(0, keep);
     const want = Number(G.settings.numPhotoQs ?? CONFIG.defaults.numPhotoQs) || 0;
@@ -2996,7 +3006,7 @@ function pickerHtml(){
     ${G.err ? `<div class="err">${esc(G.err)}</div>` : ""}
     ${!members().length || !CHAT ? `<label class="drop" for="chatFile"><b>צריך לטעון שוב את קובץ השיחה</b><br><span class="dim small">אחרי רענון הדף השיחה כבר לא בזיכרון. לחצו כאן ובחרו את הקובץ.</span><input type="file" id="chatFile" accept=".txt,.zip,text/plain,application/zip" hidden></label>` : ""}
     ${members().length ? focusPickHtml() : ""}
-    ${G.busy === "gen" ? `<div class="row"><span class="spin"></span><b id="loadLine">${esc(CONFIG.loadingLines[loadLine % CONFIG.loadingLines.length])}</b></div>` : `
+    ${G.busy === "gen" ? `<div class="row"><span class="spin"></span><b id="loadLine">${esc(CONFIG.loadingLines[loadLine % CONFIG.loadingLines.length])}</b><button class="btn ghost" data-act="gen-cancel">ביטול</button></div><p class="small dim">זה לוקח בדרך כלל עד דקה. אחרי שתי דקות בלי תשובה הבקשה נעצרת לבד.</p>` : `
     <div class="row" style="align-items:flex-end"><label class="f" style="flex:0 1 150px">כמה שאלות<input type="number" id="pickN" min="1" max="40" value="${left || 5}"></label>
       <button class="btn hot" data-act="focus-apply" ${CHAT ? "" : "disabled"}>${left ? `מחליפים את ${left} השאלות הבאות` : "מוסיפים שאלות"}</button></div>
     <p class="small dim">השאלות שכבר נשאלו והניקוד נשארים. ה-AI מנסח שאלות חדשות על מי שסומן, וזה לוקח כמה שניות.</p>`}</div>`;
@@ -3102,7 +3112,7 @@ function setupView(players){
 
   <div class="card"><h3>${members().length ? 5 : 4} · השאלות</h3>
     ${G.err ? `<div class="err">${esc(G.err)}</div>` : ""}
-    ${G.busy === "gen" ? `<div class="row"><span class="spin"></span><b id="loadLine">${esc(CONFIG.loadingLines[loadLine % CONFIG.loadingLines.length])}</b></div>` : `
+    ${G.busy === "gen" ? `<div class="row"><span class="spin"></span><b id="loadLine">${esc(CONFIG.loadingLines[loadLine % CONFIG.loadingLines.length])}</b><button class="btn ghost" data-act="gen-cancel">ביטול</button></div><p class="small dim">זה לוקח בדרך כלל עד דקה. אחרי שתי דקות בלי תשובה הבקשה נעצרת לבד.</p>` : `
     <div class="row"><button class="btn hot big" data-act="gen" ${chatOk ? "" : "disabled"}>${qCount ? "יוצרים הכול מחדש" : "יוצרים שאלות"}</button>
       ${qCount ? `<button class="btn" data-act="gen-more" ${chatOk ? "" : "disabled"}>עוד 5 שאלות</button><span class="pill">${qCount} שאלות מוכנות</span>
       <button class="btn ghost" data-act="toggle-qs">${G.showQs ? "הסתרת השאלות" : "הצגה ועריכה (ספוילרים!)"}</button>` : ""}</div>`}
@@ -3276,6 +3286,7 @@ app.addEventListener("click", async e => {
       G.busy = null; saveHost(); return render();
     case "gen": return generate(Math.max(1, Math.min(40, Number(G.settings.numQuestions) || 10)), 0);
     case "gen-more": return generate(5, G.questions.length);
+    case "gen-cancel": aiCancelled = true; aiAbort?.abort(); return;
     case "focus-open": G.picker = !G.picker; G.err = null; return render();
     case "focus-all": G.focus = []; saveHost(); return render();
     case "focus-apply": { const n = Math.max(1, Math.min(40, Number(document.getElementById("pickN")?.value) || 5)); return generate(n, G.phase === "lobby" ? 0 : G.qi + 1); }
