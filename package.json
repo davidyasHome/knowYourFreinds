@@ -1,0 +1,6 @@
+{
+  "name": "know-your-friends",
+  "private": true,
+  "scripts": { "build": "node build.js && cp dist/index.html index.html" },
+  "dependencies": { "jszip": "^3.10.1", "mqtt": "^5.16.1", "qrcode-generator": "^2.0.4" }
+}
